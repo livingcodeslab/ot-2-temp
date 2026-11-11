@@ -21,7 +21,9 @@ cd ~/ot-2-temp
 ```
 
 **Verified working:** module `TDV21P20220707D12` (TempDeck v2.1, firmware
-v2.1.0) is currently **set to 30 °C** and holding at 30.0–30.2 °C.
+v2.1.0) is currently **set to 50 °C** and holding at 50.4–50.5 °C.
+
+Repository: <https://github.com/livingcodeslab/ot-2-temp> (private).
 
 ---
 
@@ -141,7 +143,17 @@ with TempDeck() as deck:          # auto-detects the port
 
 ## Tests
 
-No hardware needed; the tests drive an in-memory fake of the firmware:
+Determined ramp behaviour, for planning runs (heating only, no cooling):
+
+| From → to | Time |
+|---|---|
+| 22 → 30 °C | ~20 s |
+| 30 → 50 °C | ~55 s |
+
+Overshoot is small (~0.5 °C); the module settles within ~1 °C of target.
+
+No hardware needed for the test suite; the tests drive an in-memory fake of the
+firmware:
 
 ```bash
 python3 -m unittest discover -s tests -v     # 10 tests
@@ -180,7 +192,12 @@ docs/PROTOCOL.md        the wire protocol, for reference
   `TDV21P20220707D12`; idle at 22.1 °C with the heater off.
 * **Target set to 30 °C** — `./set-temp set 30 --tolerance 0.5`. Ramped
   22.1 → 29.6 °C in ~20 s and settled at 30.0–30.2 °C. Raw reply confirmed:
-  `T:30.000 C:30.309`. The heater is currently **ON at 30 °C**.
+  `T:30.000 C:30.309`.
+* **Target raised to 50 °C** — `./set-temp set 50 --tolerance 0.5`. Ramped
+  30 → 49.6 °C and settled at 50.4–50.5 °C. The heater is currently **ON at
+  50 °C** — run `./set-temp off` when finished.
+* **Published** — pushed to `livingcodeslab/ot-2-temp` (private) on GitHub;
+  `origin` is `git@github.com:livingcodeslab/ot-2-temp.git`, branch `main`.
 
 ## Picking this up again
 

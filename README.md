@@ -21,7 +21,9 @@ cd ~/ot-2-temp
 ```
 
 **Verified working:** module `TDV21P20220707D12` (TempDeck v2.1, firmware
-v2.1.0) is currently **set to 50 °C** and holding at 50.4–50.5 °C.
+v2.1.0). The heater is currently **OFF** and the plate is cooling passively
+(no active cooling) back toward ambient; it read 46.4 °C and falling at the end
+of the last session.
 
 Repository: <https://github.com/livingcodeslab/ot-2-temp> (private).
 
@@ -149,8 +151,10 @@ Determined ramp behaviour, for planning runs (heating only, no cooling):
 |---|---|
 | 22 → 30 °C | ~20 s |
 | 30 → 50 °C | ~55 s |
+| 50 → 46 °C (heater off) | ~45 s |
 
-Overshoot is small (~0.5 °C); the module settles within ~1 °C of target.
+Overshoot is small (~0.5 °C); the module settles within ~1 °C of target. After
+`off` it cools only passively, so it can take a long time to return to ambient.
 
 No hardware needed for the test suite; the tests drive an in-memory fake of the
 firmware:
@@ -194,8 +198,9 @@ docs/PROTOCOL.md        the wire protocol, for reference
   22.1 → 29.6 °C in ~20 s and settled at 30.0–30.2 °C. Raw reply confirmed:
   `T:30.000 C:30.309`.
 * **Target raised to 50 °C** — `./set-temp set 50 --tolerance 0.5`. Ramped
-  30 → 49.6 °C and settled at 50.4–50.5 °C. The heater is currently **ON at
-  50 °C** — run `./set-temp off` when finished.
+  30 → 49.6 °C and settled at 50.4–50.5 °C.
+* **Heater turned off** — `./set-temp off` (`M18`). Readback confirms
+  `T:none C:50.419`, i.e. no target. Passively cooled 50.4 → 46.4 °C in ~45 s.
 * **Published** — pushed to `livingcodeslab/ot-2-temp` (private) on GitHub;
   `origin` is `git@github.com:livingcodeslab/ot-2-temp.git`, branch `main`.
 

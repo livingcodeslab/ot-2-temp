@@ -1,0 +1,11 @@
+# Opentrons Temperature Module ("TempDeck") -- USB CDC-ACM serial device.
+# Grants the *locally logged-in user* (systemd-logind "uaccess" ACL) read/write
+# access, and creates a stable device name: /dev/opentrons_tempdeck
+#
+# NOTE: TAG+="uaccess" only works for users with a LOCAL seat session.
+# Over SSH it does nothing -- install-udev-rule.sh therefore also writes an
+# explicit setfacl rule for your user. See that script.
+#
+# Install with:  sudo cp 99-opentrons-tempdeck.rules /etc/udev/rules.d/
+#                sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="ee93", SYMLINK+="opentrons_tempdeck", MODE="0660", GROUP="dialout", TAG+="uaccess"

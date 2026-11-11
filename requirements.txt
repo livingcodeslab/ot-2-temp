@@ -1,0 +1,3 @@
+# Runtime dependency.  On Debian/Ubuntu this is already installed system-wide
+# as the python3-serial package; it is listed here for portable setups.
+pyserial>=3.5

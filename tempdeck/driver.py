@@ -41,8 +41,9 @@ ACK = b"ok\r\nok\r\n"
 USB_VID = 0x04D8  # Microchip Technology, Inc.
 USB_PID = 0xEE93  # Opentrons TempDeck
 
-# Hardware limits (degrees Celsius).  The physical range of a TempDeck GEN1/GEN2
-# is 4..95 C; it can only heat above ambient, never below it.
+# Hardware limits (degrees Celsius).  The Temperature Module is a thermoelectric
+# (Peltier) device: it actively HEATS and COOLS over 4..95 C, so it can hold
+# temperatures below ambient.  Driving it below ambient causes condensation.
 MIN_TEMP = 4.0
 MAX_TEMP = 95.0
 

@@ -7,16 +7,24 @@ Commands
   off               stop heating / turn the module off
   wait <C>          block until the plate reaches <C> (default tolerance 1 C)
   monitor [C]       print readings until Ctrl-C
+  plan <profile>    dry run: show the timeline of a protocol, no hardware use
+  run <profile>     execute a multi-step temperature protocol
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 import time
 
 from .driver import MAX_TEMP, MIN_TEMP, TempDeck, TempDeckError, find_port
+from .profile import Profile, human_duration, run_profile
+
+
+def _raise_interrupt(signum, frame):  # pragma: no cover - signal plumbing
+    raise KeyboardInterrupt
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -70,7 +78,62 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mon = sub.add_parser("monitor", help="poll and print readings until Ctrl-C")
     p_mon.add_argument("--interval", type=float, default=2.0)
 
+    for name, help_text in (
+        ("plan", "dry run: print a protocol's timeline (no hardware access)"),
+        ("run", "execute a multi-step temperature protocol from a JSON file"),
+    ):
+        p_prof = sub.add_parser(name, help=help_text)
+        p_prof.add_argument("profile", help="path to a profile JSON file")
+        p_prof.add_argument(
+            "--start-temp",
+            type=float,
+            default=None,
+            help="assumed/starting plate temperature (default: read the module)",
+        )
+        if name == "run":
+            p_prof.add_argument("--poll", type=float, default=2.0, help="poll seconds")
+            p_prof.add_argument(
+                "--tolerance", type=float, default=0.5, help="arrival tolerance in C"
+            )
+            p_prof.add_argument(
+                "--max-lead",
+                type=float,
+                default=None,
+                help=(
+                    "optional safety valve: never put the setpoint more than this "
+                    "many C past the plate. Off by default - enabling it on a ramp "
+                    "the module cannot sustain silently caps the rate."
+                ),
+            )
+            p_prof.add_argument(
+                "--lag-warn", type=float, default=3.0, help="warn if this far behind"
+            )
+            p_prof.add_argument("--log", default=None, help="write a CSV log here")
+            p_prof.add_argument(
+                "--off-on-exit", action="store_true", help="turn the heater off at the end"
+            )
+            p_prof.add_argument(
+                "--yes", action="store_true", help="skip the confirmation prompt"
+            )
+
     return parser
+
+
+def _plan(profile: Profile, start_temp: float) -> int:
+    print(f"Profile: {profile.name}")
+    print(f"Start:   {start_temp:.1f} C")
+    total = 0.0
+    current = start_temp
+    for index, step in enumerate(profile.steps, 1):
+        estimate = step.estimated_seconds(current)
+        total += estimate
+        print(
+            f"  {index}. {step.label:<42s} ~{human_duration(estimate):>8s}"
+            f"   (cumulative ~{human_duration(total)})"
+        )
+        current = step.target
+    print(f"\nEstimated total: ~{human_duration(total)} (unloaded plate; see README)")
+    return 0
 
 
 def _print_temperature(deck: TempDeck) -> None:
@@ -85,6 +148,16 @@ def main(argv=None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+
+    # `plan` is a dry run: it must never need the hardware when a start
+    # temperature is supplied, so handle it before port discovery.
+    if args.command == "plan" and args.start_temp is not None:
+        try:
+            profile = Profile.load(args.profile)
+        except (OSError, ValueError) as exc:
+            print(f"error: cannot load profile: {exc}", file=sys.stderr)
+            return 2
+        return _plan(profile, args.start_temp)
 
     try:
         port = args.port or find_port()
@@ -140,6 +213,44 @@ def main(argv=None) -> int:
                     on_update=lambda t: print(f"  {t:.1f} C", flush=True),
                 )
                 print(f"Reached {reached:.1f} C (target {args.celsius:.0f} C).")
+
+            elif args.command == "plan":
+                return _plan(profile, deck.get_temperature()[0])
+
+            elif args.command == "run":
+                try:
+                    profile = Profile.load(args.profile)
+                except (OSError, ValueError) as exc:
+                    print(f"error: cannot load profile: {exc}", file=sys.stderr)
+                    return 2
+                if not args.yes:
+                    print(f"Profile: {profile.name}")
+                    for index, step in enumerate(profile.steps, 1):
+                        print(f"  {index}. {step.label}")
+                    print(f"\nRun this protocol now on {port}? [y/N] ", end="", flush=True)
+                    if input().strip().lower() not in ("y", "yes"):
+                        print("Aborted.")
+                        return 1
+                # Turn SIGTERM into KeyboardInterrupt so the run reports the
+                # state it left behind (instead of dying silently mid-ramp).
+                previous = signal.signal(signal.SIGTERM, _raise_interrupt)
+                try:
+                    summary = run_profile(
+                        deck,
+                        profile,
+                        poll=args.poll,
+                        tolerance=args.tolerance,
+                        max_lead=args.max_lead,
+                        lag_warn=args.lag_warn,
+                        log_path=args.log,
+                    )
+                finally:
+                    signal.signal(signal.SIGTERM, previous)
+                if args.off_on_exit:
+                    deck.deactivate()
+                    print("Heater off.")
+                print(f"Summary: {summary['profile']}, "
+                      f"{human_duration(summary['elapsed_s'])}")
 
             elif args.command == "monitor":
                 print("Reading temperatures; Ctrl-C to stop.", flush=True)

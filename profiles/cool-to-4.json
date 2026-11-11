@@ -1,0 +1,7 @@
+{
+  "name": "cool-to-4-and-hold",
+  "steps": [
+    {"ramp": 4, "tolerance": 0.5},
+    {"hold": 4, "duration": "3m", "tolerance": 0.5}
+  ]
+}

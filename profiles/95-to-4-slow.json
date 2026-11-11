@@ -1,0 +1,9 @@
+{
+  "name": "anneal-slow-2h",
+  "steps": [
+    {"ramp": 95, "tolerance": 0.5},
+    {"hold": 95, "duration": "10m"},
+    {"ramp": 4, "rate": 0.5},
+    {"hold": 4, "duration": "15m"}
+  ]
+}

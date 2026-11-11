@@ -40,7 +40,13 @@ Notes:
   0-decimal precision.
 * A freshly opened port may need a moment to settle; this driver sleeps 200 ms
   and clears the input buffer before the first command.
-* Physical range is 4–95 °C, heating only. There is no cooling element.
+* Physical range is 4–95 °C. The module is **thermoelectric (Peltier)** and both
+  heats and cools, so it can hold below ambient. Opentrons describes it as a
+  "fully automated thermoelectric module" rated 4–95 °C.
+* There is no rate control in the firmware: `M104` sets a target and the onboard
+  PID drives the element at full power to reach it. Rate-limited ramps (e.g.
+  1 °C/min) must be produced by the host, by moving the target along a
+  trajectory — see `tempdeck/profile.py`.
 * The module does not spontaneously report data; it is strictly
   request/response, so polling `M105` is how you track a ramp. Measured ramp
   rate from ambient: ~22 → 29.6 °C in about 20 s.

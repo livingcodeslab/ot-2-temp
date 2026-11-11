@@ -82,6 +82,8 @@ short for `set`, so `./set-temp 30` == `python3 -m tempdeck set 30`.
 | `wait <C>` | block until the plate reaches `<C>` |
 | `off` | stop heating (`M18`) |
 | `monitor` | print readings every `--interval` seconds until Ctrl-C |
+| `plan <profile>` | dry run: print a protocol's timeline (works unplugged) |
+| `run <profile>` | execute a multi-step protocol from a JSON file |
 
 Useful flags:
 
@@ -131,9 +133,15 @@ with TempDeck() as deck:          # auto-detects the port
 
 ## Safety / notes
 
-* The module can only **heat**, and only in the range **4–95 °C**; below
-  ambient it will simply stall. Requests outside that range are rejected
-  client-side.
+* The module is a **thermoelectric (Peltier) device**: it both heats and cools,
+  actively holding 4–95 °C, including temperatures *below* ambient (it reached
+  19.7 °C and falling from a 50 °C start while ambient was ~22 °C).
+  Requests outside 4–95 °C are rejected client-side.
+* Because it can go below ambient, the plate can form **condensation** when held
+  cold. Keep it at or above ambient if that matters for your samples.
+* Cooling and heating happen at full power toward whatever target you set — the
+  firmware has no rate control. For a controlled ramp rate you must move the
+  target along a trajectory yourself; see "Temperature protocols" below.
 * The heater keeps running after the script exits. Always finish with
   `./set-temp off` (or `deactivate()`), and do not leave the module unattended
   at high temperature.
@@ -143,40 +151,122 @@ with TempDeck() as deck:          # auto-detects the port
   `Permission denied`/`Device busy`, check for a leftover `monitor` process or
   a running Opentrons app.
 
-## Tests
+## Temperature protocols
 
-Determined ramp behaviour, for planning runs (heating only, no cooling):
+Multi-step protocols (heat, hold, rate-limited ramps) live in JSON profiles and
+are executed by `run`. The important constraint:
 
-| From → to | Time |
-|---|---|
-| 22 → 30 °C | ~20 s |
-| 30 → 50 °C | ~55 s |
-| 50 → 46 °C (heater off) | ~45 s |
+> **The firmware has no rate control.** `M104 S<x>` means "go to x" and the
+> onboard PID drives the Peltier at full power to get there. It also accepts
+> **whole degrees only**. So a "1 °C/min" ramp has to be produced by the host,
+> by walking the target along a time trajectory:
+>
+> ```
+> setpoint(t) = start + rate * (t - t0)      (clamped to the target)
+> ```
 
-Overshoot is small (~0.5 °C); the module settles within ~1 °C of target. After
-`off` it cools only passively, so it can take a long time to return to ambient.
+That is what `tempdeck/profile.py` does: every poll it evaluates the trajectory,
+rounds to an integer, and sends `M104` only when that integer changes. It is
+time-based rather than "wait for the step, then dwell" on purpose — a loaded
+plate may never reach a step, and a wait-based loop stalls silently.
 
-No hardware needed for the test suite; the tests drive an in-memory fake of the
-firmware:
+### Profiles
 
-```bash
-python3 -m unittest discover -s tests -v     # 10 tests
+```json
+{
+  "name": "heat-90-then-1cpm-cool-to-37-hold",
+  "steps": [
+    {"ramp": 90},
+    {"hold": 90, "duration": "5m"},
+    {"ramp": 37, "rate": 1.0},
+    {"hold": 37, "duration": "10m"}
+  ]
+}
 ```
 
-They cover command framing (`M104 S30\r\n\r\n`), ack parsing (both `ok\r\n`
-variants), `T:none` handling, integer rounding, device-info parsing, range
-rejection and the wait/timeout logic.
+* `{"ramp": X}` — go to X °C as fast as the module can.
+* `{"ramp": X, "rate": R}` — reach X °C at R °C/min. Optional per-step
+  `"tolerance"` (default 0.5 °C).
+* `{"hold": X, "duration": "10m"}` — sit at X °C; durations accept `30s`,
+  `5m`, `1h30m` or a plain number of seconds.
+
+The example above is a real file (`profiles/90-to-37-1cpm.json`). Note the
+time budget: **90 → 37 °C at 1 °C/min is 53 minutes**, most of which is the ramp.
+
+### Running
+
+```bash
+./set-temp plan profiles/90-to-37-1cpm.json --start-temp 22   # dry run, no hardware
+./set-temp run  profiles/90-to-37-1cpm.json --log logs/run.csv --off-on-exit
+```
+
+`plan` prints the timeline without touching the module (it appears in the
+estimate column: heating ≈20 °C/min, cooling ≈6 °C/min, measured — see below).
+`run` asks for confirmation (`--yes` skips it), logs every sample to CSV
+(`elapsed_s,phase,actual_c,setpoint_c`), and prints the achieved rate plus a
+revised ETA as it goes. If the plate falls behind the requested rate by
+`--lag-warn` (default 3 °C) it says so **once**, quoting the rate it is actually
+achieving — an unachievable rate is loud, not silent.
+
+`--max-lead <C>` is an optional safety valve that caps how far the setpoint may
+sit beyond the plate. **It is off by default**, deliberately: enabling a fixed
+2 °C clamp once turned a requested 10 °C/min ramp into ~2 °C/min, because on a
+ramp the module cannot sustain the setpoint gets pinned just ahead of the plate
+and the schedule is thrown away. Leave it off for rate work.
+
+### Interrupting
+
+Ctrl-C (or `SIGTERM`) is caught and reports the setpoint the module was left
+regulating to. **The heater keeps running** after a profile ends or is aborted —
+`run` leaves it at the final target on purpose (so a protocol can hand off to
+microscopy or whatever comes next). Use `--off-on-exit`, or `./set-temp off`.
+
+## Measured ramp rates
+
+Measured on this unloaded TempDeck v2.1 at ~22 °C ambient. The module heats and
+cools actively; `off` leaves it to drift passively:
+
+| From → to | Time | Rate |
+|---|---|---|
+| 22 → 30 °C (heating) | ~20 s | ~22 °C/min |
+| 30 → 50 °C (heating) | ~55 s | ~22 °C/min |
+| 28 → 6.5 °C (active cooling) | ~4 min | ~5.5 °C/min avg |
+| 50 → 46 °C (heater off, passive) | ~45 s | — |
+
+Overshoot is small (~0.5 °C); the module settles within ~1 °C of target. Cooling
+slows as it approaches the target (and the further below ambient, the harder it
+is), so treat the cooling figure as a best case. After `off` it drifts back to
+ambient slowly — set an explicit lower target instead if you want it to hurry.
+
+## Tests
+
+No hardware needed; the tests drive an in-memory fake of the firmware:
+
+```bash
+python3 -m unittest discover -s tests -v     # 30 tests
+```
+
+`tests/test_driver.py` covers command framing (`M104 S30\r\n\r\n`), ack parsing
+(both `ok\r\n` variants), `T:none` handling, integer rounding, device-info
+parsing, range rejection and the wait/timeout logic. `tests/test_profile.py`
+covers duration parsing, the ramp trajectory, profile validation, the
+`max_lead` regression (the clamp bug above), achieved-rate/ETA maths, and a
+full run + CSV log against a scripted fake deck.
 
 ## Layout
 
 ```
 tempdeck/driver.py      serial driver: framing, ack parsing, port discovery
-tempdeck/cli.py         argparse CLI (info/temp/set/wait/off/monitor)
+tempdeck/profile.py     multi-step protocols: trajectory ramps, holds, CSV logs
+tempdeck/cli.py         argparse CLI (info/temp/set/wait/off/monitor/plan/run)
 tempdeck/__main__.py    enables `python3 -m tempdeck`
 set-temp                convenience wrapper (`./set-temp 30`)
+profiles/*.json         example protocols (90→37 at 1 °C/min, cool to 4 °C, ...)
+logs/*.csv              run logs written by `run --log`
 tests/test_driver.py    protocol tests against a fake serial port
+tests/test_profile.py   protocol/ramp tests (incl. the max_lead regression)
 scripts/99-opentrons-tempdeck.rules   udev rule (uaccess ACL + stable symlink)
-scripts/install-udev-rule.sh          installs the rule (needs sudo)
+scripts/install-udev-rule.sh          installs rules (needs sudo)
 docs/PROTOCOL.md        the wire protocol, for reference
 ```
 
@@ -203,6 +293,27 @@ docs/PROTOCOL.md        the wire protocol, for reference
   `T:none C:50.419`, i.e. no target. Passively cooled 50.4 → 46.4 °C in ~45 s.
 * **Published** — pushed to `livingcodeslab/ot-2-temp` (private) on GitHub;
   `origin` is `git@github.com:livingcodeslab/ot-2-temp.git`, branch `main`.
+* **Correction — it is a Peltier, it *does* cool.** Earlier notes in this repo
+  claimed the module was "heating only". That was wrong: Opentrons document it
+  as a "fully automated thermoelectric module", 4–95 °C, and it visibly cooled
+  from 50 °C down through ambient. Docs and code comments corrected.
+* **Target 4 °C** — cooling from 44 → 24 °C in 2 min, then to 13 °C, then a
+  restarted run reached **6.5 °C in 4 min** from 28.4 °C before being
+  deliberately aborted. It never reached 4 °C simply because the target kept
+  being overwritten by other experiments, not for any hardware reason.
+* **Two bugs found from that session's CSV log** (`logs/smoke.csv`), both fixed:
+  1. `max_lead` defaulted to 2 °C, so a ramp the module could not sustain got
+     its setpoint pinned just above the plate and a requested **10 °C/min ran at
+     ~2 °C/min** — silently. Now off by default, with the achieved rate and a
+     revised ETA reported instead.
+  2. Killing a run leaves the module regulating to the last *intermediate*
+     setpoint (e.g. 24 °C, not the 30 °C it was ramping to), which looks like
+     "it stopped". Aborts now say exactly what setpoint was left behind.
+  Verified meanwhile that opening the port does **not** reset the module: the
+  4 °C target survived ~15 separate `./set-temp temp` invocations.
+* **Protocol runner added** — `tempdeck/profile.py` + `plan`/`run` CLI commands,
+  JSON profiles in `profiles/`, CSV run logs in `logs/`. 30 tests pass.
+* **Module unplugged** at the end of the session, heater off (`T:none`).
 
 ## Picking this up again
 
@@ -211,6 +322,10 @@ docs/PROTOCOL.md        the wire protocol, for reference
 3. `./set-temp info` — confirm you can talk to it.
 4. `./set-temp 30` — do the thing.
 5. `./set-temp off` — when finished.
+
+Multi-step work: `./set-temp plan profiles/<x>.json --start-temp 22` to see the
+timeline (works with the module unplugged), then
+`./set-temp run profiles/<x>.json --log logs/run.csv` to execute it.
 
 If step 3 fails with `Permission denied`, re-run
 `sudo ./scripts/install-udev-rule.sh` and replug the module. Verify the ACL with

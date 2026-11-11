@@ -1,0 +1,9 @@
+{
+  "name": "heat-90-then-1cpm-cool-to-37-hold",
+  "steps": [
+    {"ramp": 90},
+    {"hold": 90, "duration": "5m"},
+    {"ramp": 37, "rate": 1.0},
+    {"hold": 37, "duration": "10m"}
+  ]
+}

@@ -303,6 +303,12 @@ slows as it approaches the target (and the further below ambient, the harder it
 is), so treat the cooling figure as a best case. After `off` it drifts back to
 ambient slowly — set an explicit lower target if you want it to hurry.
 
+**Rate tracking accuracy** (measured, 37 → 21.8 °C at 1 °C/min,
+`logs/37-to-ambient.csv`): 0.99 °C/min overall, 1.02 °C/min through the steady
+part, mean deviation from the scheduled trajectory 0.39 °C (max 1.09 °C). The
+first ~3 min are a little slow while the element reverses from heating to
+cooling, which is normal.
+
 ## Tests
 
 No hardware needed; the tests drive an in-memory fake of the firmware:
@@ -378,6 +384,22 @@ docs/PROTOCOL.md        the wire protocol, for reference
 * **Protocol runner added** — `tempdeck/profile.py` + `plan`/`run` CLI commands,
   JSON profiles in `profiles/`, CSV run logs in `logs/`. 30 tests pass.
 * **Module unplugged** at the end of the session, heater off (`T:none`).
+* **Protocol run verified on hardware (37 → ambient at 1 °C/min).** Replugged and
+  ran `profiles/37-to-ambient-1cpm.json`: 21.8 → 37 °C in ~35 s (max rate), then
+  a 1 °C/min descent to ambient, 15m06s total (`logs/37-to-ambient.csv`).
+  Measured from the CSV: **0.99 °C/min overall vs 1.00 requested**, 1.02 °C/min
+  over the steady 11.5 min, mean deviation from schedule 0.39 °C, max 1.09 °C,
+  17 integer setpoints (37→22). So the `max_lead` fix works: the rate is now
+  actually delivered, not silently throttled.
+* **Bug: intermittent `Unexpected M105 response: ''`.** `./set-temp set 37`
+  printed "Target set to 37 C." and then errored, because a payload-less command
+  (`M104`) acks `ok\r\nok\r\n` and a duplicate of that ack could still be in the
+  kernel buffer when the next `M105` was written — `reset_input_buffer()` races
+  with it, so the parser returned an empty payload as if it were an answer.
+  Fixed by skipping a leading empty ack when a payload is expected
+  (`expect_payload`), with regression tests; verified on hardware with 10
+  back-to-back set-then-query cycles, 10/10 clean.
+* **Holding at 37 °C** at the end of the session (`target: 37`), readback ~37.4 °C.
 
 ## Picking this up again
 

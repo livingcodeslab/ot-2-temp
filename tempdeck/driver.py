@@ -53,6 +53,8 @@ DEFAULT_RETRIES = 3
 # "T:none C:23"  /  "T:30 C:23"
 _TEMP_RE = re.compile(r"T:(?P<target>none|[-0-9.]+)\s+C:(?P<current>[-0-9.]+)", re.I)
 _KEY_VALUE_RE = re.compile(r"(?P<key>\S+):(?P<value>\S+)")
+# One ack, or two back to back, as some firmware builds send "ok\r\nok\r\n".
+_ACK_RE = re.compile(rb"ok\r\n(?:ok\r\n)?")
 
 
 class TempDeckError(Exception):
@@ -158,8 +160,17 @@ class TempDeck:
         return bool(self._serial and self._serial.is_open)
 
     # -- low level --------------------------------------------------------
-    def _read_response(self) -> str:
-        """Read until the firmware ack arrives, return the payload before it."""
+    def _read_response(self, expect_payload: bool = False) -> str:
+        """Read until the firmware ack arrives, return the payload before it.
+
+        When ``expect_payload`` is set (``M105``/``M115``), a leading *empty* ack
+        is skipped rather than returned.  Commands without a payload (``M104``,
+        ``M18``) ack with a bare ``ok\r\nok\r\n``, and that duplicate can still
+        be sitting in the kernel buffer when the next command is written --
+        ``reset_input_buffer()`` races with it.  Treating it as the answer made
+        queries intermittently return ``''`` (seen as
+        ``error: Unexpected M105 response: ''``), so skip it and keep reading.
+        """
         assert self._serial is not None
         buf = b""
         deadline = time.monotonic() + self.timeout
@@ -167,22 +178,21 @@ class TempDeck:
             chunk = self._serial.read(self._serial.in_waiting or 1)
             if chunk:
                 buf += chunk
-                if ACK in buf:
-                    payload, _, _ = buf.partition(ACK)
-                    return payload.decode("ascii", "replace").strip()
-                # Tolerate firmware that acks with one "ok\r\n".
-                if buf.rstrip().endswith(b"ok"):
-                    payload = buf.rstrip()
-                    for ack in (b"ok", b"ok\r\n", b"ok\r\nok"):
-                        if payload.endswith(ack):
-                            payload = payload[: -len(ack)]
-                            break
-                    return payload.decode("ascii", "replace").strip()
+                while True:
+                    match = _ACK_RE.search(buf)
+                    if not match:
+                        break
+                    payload = buf[: match.start()].decode("ascii", "replace").strip()
+                    buf = buf[match.end() :]
+                    if payload or not expect_payload:
+                        return payload
         raise TempDeckError(
             f"No response from module at {self.port} (got {buf!r})."
         )
 
-    def _send_command(self, gcode: str, retries: int = DEFAULT_RETRIES) -> str:
+    def _send_command(
+        self, gcode: str, retries: int = DEFAULT_RETRIES, expect_payload: bool = False
+    ) -> str:
         """Send one G-code line and return its payload."""
         if not self.is_open:
             self.open()
@@ -194,7 +204,7 @@ class TempDeck:
                 self._serial.reset_input_buffer()
                 self._serial.write(command)
                 self._serial.flush()
-                return self._read_response()
+                return self._read_response(expect_payload=expect_payload)
             except (TempDeckError, serial.SerialException) as exc:
                 last_error = exc
                 log.debug("attempt %d/%d for %r failed: %s", attempt, retries, gcode, exc)
@@ -203,7 +213,7 @@ class TempDeck:
 
     # -- public API -------------------------------------------------------
     def get_device_info(self) -> Dict[str, str]:
-        payload = self._send_command("M115")
+        payload = self._send_command("M115", expect_payload=True)
         info = {m.group("key"): m.group("value") for m in _KEY_VALUE_RE.finditer(payload)}
         if not info:
             raise TempDeckError(f"Unexpected M115 response: {payload!r}")
@@ -211,7 +221,7 @@ class TempDeck:
 
     def get_temperature(self) -> Tuple[float, Optional[float]]:
         """Return ``(current_celsius, target_celsius_or_None)``."""
-        payload = self._send_command("M105")
+        payload = self._send_command("M105", expect_payload=True)
         match = _TEMP_RE.search(payload)
         if not match:
             raise TempDeckError(f"Unexpected M105 response: {payload!r}")

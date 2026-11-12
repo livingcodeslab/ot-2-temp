@@ -26,6 +26,7 @@ class FakeSerial:
         self.temperature = 22.0
         self.target = None
         self.acks = b"ok\r\nok\r\n"
+        self.stray_ack = b""  # emitted before the real reply, like a late duplicate
 
     # --- pyserial surface -------------------------------------------------
     @property
@@ -53,6 +54,10 @@ class FakeSerial:
 
     # --- fake firmware ----------------------------------------------------
     def _handle(self, command):
+        reply = self._reply(command)
+        return self.stray_ack + reply
+
+    def _reply(self, command):
         if command.startswith("M104"):
             self.target = float(command.split("S")[1])
             self.temperature = self.target
@@ -115,6 +120,34 @@ class TempDeckTests(unittest.TestCase):
         self.fake.acks = b"ok\r\n"
         self.deck.set_temperature(30)
         self.assertEqual(self.deck.get_temperature()[1], 30.0)
+
+    def test_leading_duplicate_ack_is_skipped_for_queries(self):
+        """An M104-style ack left in the buffer must not be read as an answer.
+
+        Real failure seen on hardware: `set 37` printed "Target set to 37 C."
+        then `error: Unexpected M105 response: ''`, because the duplicate
+        `ok\r\nok\r\n` from the M104 was still in the buffer and the next M105
+        read returned an empty payload.
+        """
+        self.fake.stray_ack = b"ok\r\nok\r\n"
+        current, target = self.deck.get_temperature()
+        self.assertEqual(current, 22.0)
+        self.assertIsNone(target)
+
+        self.deck.set_temperature(37)
+        self.fake.stray_ack = b"ok\r\nok\r\n"
+        current, target = self.deck.get_temperature()
+        self.assertEqual(target, 37.0)
+
+    def test_device_info_skips_leading_duplicate_ack(self):
+        self.fake.stray_ack = b"ok\r\nok\r\n"
+        self.assertEqual(self.deck.get_device_info()["model"], "temp_deck_v20")
+
+    def test_deactivate_is_not_confused_by_missing_payload(self):
+        # M18 expects no payload, so a bare ack is a success, not an error.
+        self.deck.set_temperature(30)
+        self.deck.deactivate()
+        self.assertIsNone(self.fake.target)
 
     def test_out_of_range_rejected(self):
         with self.assertRaises(driver.TempDeckError):

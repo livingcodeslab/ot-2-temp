@@ -1,0 +1,8 @@
+{
+  "name": "37-to-ambient-1cpm",
+  "note": "Ramp to 37 C as fast as the module can, then cool to ambient (21.8 C measured with the plate at rest on 2025-11-11) at 1 C/min.",
+  "steps": [
+    {"ramp": 37, "tolerance": 0.5},
+    {"ramp": 21.8, "rate": 1.0, "tolerance": 0.5}
+  ]
+}

@@ -343,7 +343,14 @@ def run_profile(
                 log.write(phase, actual, sent_setpoint)
 
                 achieved, eta = rate_status(actual, start_temp, elapsed, step.target)
-                eta_text = human_duration(eta) if eta != float("inf") else "?"
+                # Below ~0.2 C/min the extrapolated ETA explodes (it is mostly
+                # measurement noise during the Peltier-reversal transient), so
+                # report "?" rather than a fake "~3h25m".
+                eta_text = (
+                    human_duration(eta)
+                    if eta != float("inf") and abs(achieved) >= 0.2
+                    else "?"
+                )
                 say(
                     f"  {actual:.1f} C  (sched {sched:.1f} C, "
                     f"{abs(achieved):.1f} C/min, ~{eta_text} left)"

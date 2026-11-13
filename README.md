@@ -100,7 +100,7 @@ Module-level helpers: `TempDeck`, `TempDeckError`, `find_port`, `MIN_TEMP` (4),
   unplugged** — nothing is running and nothing is holding the serial port.
 * Everything below was verified on this unit: 30 °C, 50 °C, cooling to 6.5 °C,
   and 30 automated tests pass.
-* Repo: <https://github.com/livingcodeslab/ot-2-temp> (private).
+* Repo: <https://github.com/livingcodeslab/ot-2-temp> (public).
 
 ## Requirements
 
@@ -361,7 +361,7 @@ docs/PROTOCOL.md        the wire protocol, for reference
   30 → 49.6 °C and settled at 50.4–50.5 °C.
 * **Heater turned off** — `./set-temp off` (`M18`). Readback confirms
   `T:none C:50.419`, i.e. no target. Drifted 50.4 → 46.4 °C in ~45 s.
-* **Published** — pushed to `livingcodeslab/ot-2-temp` (private) on GitHub;
+* **Published** — pushed to `livingcodeslab/ot-2-temp` on GitHub
   `origin` is `git@github.com:livingcodeslab/ot-2-temp.git`, branch `main`.
 * **Correction — it is a Peltier, it *does* cool.** Earlier notes in this repo
   claimed the module was "heating only". That was wrong: Opentrons document it as
